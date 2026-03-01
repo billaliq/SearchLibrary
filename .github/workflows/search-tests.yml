@@ -1,0 +1,175 @@
+name: Search Library CI – MC/DC Tests
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Trigger: run on every push and pull request to main / develop branches,
+# and also allow manual execution from the GitHub Actions UI.
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: "8.0.x"       # Target .NET SDK version
+  SOLUTION_PATH:  "./SearchLibrary.sln"
+  TEST_PROJECT:   "./SearchLibrary.Tests/SearchLibrary.Tests.csproj"
+  RESULTS_DIR:    "./TestResults"
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 1 – Build & run all MC/DC tests
+  # ───────────────────────────────────────────────────────────────────────────
+  build-and-test:
+    name: Build → Test (MC/DC + All-Paths)
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Set up .NET SDK
+      - name: Set up .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # 3. Cache NuGet packages for faster subsequent runs
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      # 4. Restore dependencies
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+      # 5. Build the solution in Release configuration
+      - name: Build solution
+        run: dotnet build ${{ env.SOLUTION_PATH }} --configuration Release --no-restore
+
+      # 6. Run MC/DC tests for BinarySearch
+      - name: Run BinarySearch MC/DC tests
+        run: |
+          dotnet test ${{ env.TEST_PROJECT }} \
+            --configuration Release \
+            --no-build \
+            --filter "Category=BinarySearch&Category=MC_DC" \
+            --logger "trx;LogFileName=BinarySearch_MCDC.trx" \
+            --results-directory ${{ env.RESULTS_DIR }}/BinarySearch \
+            --collect:"XPlat Code Coverage"
+
+      # 7. Run MC/DC tests for LinearSearch
+      - name: Run LinearSearch MC/DC tests
+        run: |
+          dotnet test ${{ env.TEST_PROJECT }} \
+            --configuration Release \
+            --no-build \
+            --filter "Category=LinearSearch&Category=MC_DC" \
+            --logger "trx;LogFileName=LinearSearch_MCDC.trx" \
+            --results-directory ${{ env.RESULTS_DIR }}/LinearSearch \
+            --collect:"XPlat Code Coverage"
+
+      # 8. Run MC/DC tests for InterpolationSearch
+      - name: Run InterpolationSearch MC/DC tests
+        run: |
+          dotnet test ${{ env.TEST_PROJECT }} \
+            --configuration Release \
+            --no-build \
+            --filter "Category=InterpolationSearch&Category=MC_DC" \
+            --logger "trx;LogFileName=InterpolationSearch_MCDC.trx" \
+            --results-directory ${{ env.RESULTS_DIR }}/InterpolationSearch \
+            --collect:"XPlat Code Coverage"
+
+      # 9. Run All-Paths coverage tests
+      - name: Run All-Paths coverage tests
+        run: |
+          dotnet test ${{ env.TEST_PROJECT }} \
+            --configuration Release \
+            --no-build \
+            --filter "Category=AllPaths" \
+            --logger "trx;LogFileName=AllPaths.trx" \
+            --results-directory ${{ env.RESULTS_DIR }}/AllPaths \
+            --collect:"XPlat Code Coverage"
+
+      # 10. Run the complete test suite and generate full coverage report
+      - name: Run full test suite with coverage
+        run: |
+          dotnet test ${{ env.TEST_PROJECT }} \
+            --configuration Release \
+            --no-build \
+            --logger "trx;LogFileName=FullSuite.trx" \
+            --results-directory ${{ env.RESULTS_DIR }}/Full \
+            --collect:"XPlat Code Coverage" \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+
+      # 11. Install ReportGenerator for HTML coverage report
+      - name: Install ReportGenerator
+        run: dotnet tool install --global dotnet-reportgenerator-globaltool
+
+      # 12. Generate HTML coverage report
+      - name: Generate HTML coverage report
+        run: |
+          reportgenerator \
+            -reports:"${{ env.RESULTS_DIR }}/**/coverage.opencover.xml" \
+            -targetdir:"${{ env.RESULTS_DIR }}/CoverageReport" \
+            -reporttypes:"Html;Badges;TextSummary"
+
+      # 13. Upload test results as artifacts
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()      # Upload even on failure so results are always available
+        with:
+          name: test-results-${{ github.run_number }}
+          path: ${{ env.RESULTS_DIR }}/
+          retention-days: 30
+
+      # 14. Upload coverage report as artifact
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report-${{ github.run_number }}
+          path: ${{ env.RESULTS_DIR }}/CoverageReport/
+          retention-days: 30
+
+      # 15. Print coverage summary to the Actions log
+      - name: Print coverage summary
+        run: |
+          if [ -f "${{ env.RESULTS_DIR }}/CoverageReport/Summary.txt" ]; then
+            cat "${{ env.RESULTS_DIR }}/CoverageReport/Summary.txt"
+          else
+            echo "Coverage summary not found – check the ReportGenerator step."
+          fi
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 2 – Static code analysis (runs in parallel with tests)
+  # ───────────────────────────────────────────────────────────────────────────
+  code-quality:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+      # Build with TreatWarningsAsErrors to enforce code quality
+      - name: Build with warnings as errors
+        run: |
+          dotnet build ${{ env.SOLUTION_PATH }} \
+            --configuration Release \
+            --no-restore \
+            /p:TreatWarningsAsErrors=true
