@@ -6,9 +6,9 @@ name: Search Library CI – MC/DC Tests
 # ─────────────────────────────────────────────────────────────────────────────
 on:
   push:
-    branches: [ "main", "develop" ]
+    branches: [ "master", "main" ]
   pull_request:
-    branches: [ "main", "develop" ]
+    branches: [ "master", "main" ]
   workflow_dispatch:
 
 env:
@@ -173,3 +173,4 @@ jobs:
             --configuration Release \
             --no-restore \
             /p:TreatWarningsAsErrors=true
+
